@@ -68,7 +68,7 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: str = Header(None)):
     kb_ctx = ""
     citations = []
     if should_retrieve(stage, utter):
-        hits = await kb_search(utter, k=2)
+        hits = await kb_search(utter, k=5)
         if hits:
             kb_ctx = format_kb_context(hits)
             citations = [1]
