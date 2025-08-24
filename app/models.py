@@ -1,28 +1,18 @@
-
 from pydantic import BaseModel, Field
-from typing import Any, Dict, List, Optional
+from typing import Optional, Dict, List
 import time
 
 class OrchestrateRequest(BaseModel):
     session_id: str
-    last_user_utterance: str = ""
-    metadata: Optional[Dict[str, Any]] = None
+    last_user_utterance: Optional[str] = ""
 
 class OrchestrateResponse(BaseModel):
-    updates: Dict[str, Any] = Field(default_factory=dict)
-    next_prompt: str = "Could you please repeat that?"
+    updates: dict
+    next_prompt: str
     completed: bool = False
     handoff: bool = False
-    citations: List[int] = Field(default_factory=list)
+    citations: List[int] = []
     confidence: float = 0.7
-
-class Slots(BaseModel):
-    identity: Dict[str, Any] = Field(default_factory=dict)
-    contact:  Dict[str, Any] = Field(default_factory=dict)
-    case:     Dict[str, Any] = Field(default_factory=dict)
-    attorney: Dict[str, Any] = Field(default_factory=dict)
-    injury:   Dict[str, Any] = Field(default_factory=dict)
-    funding:  Dict[str, Any] = Field(default_factory=dict)
 
 class SessionState(BaseModel):
     session_id: str
@@ -43,13 +33,29 @@ class SessionState(BaseModel):
     law_firm: Optional[str] = None
 
     # Injury & funding
-    injury_type: Optional[str] = None      # auto accident, dog bite, slip & fall, etc.
-    injury_details: Optional[str] = None   # short, empathetic capture
-    funding_amount: Optional[str] = None   # USD string
+    injury_type: Optional[str] = None
+    injury_details: Optional[str] = None
+    funding_amount: Optional[str] = None
 
     # Flow control
     retries: Dict[str, int] = Field(default_factory=dict)
     last_prompt: Optional[str] = None
-    summary_read: bool = False             # have we read back the summary?
-    awaiting_confirmation: bool = False    # waiting for “yes/no” after summary
+    summary_read: bool = False
+    awaiting_confirmation: bool = False
     updated_at: float = Field(default_factory=lambda: time.time())
+
+    def to_updates(self) -> dict:
+        return {
+            "full_name": self.full_name,
+            "phone": self.phone,
+            "best_phone": self.best_phone or self.phone,
+            "email": self.email,
+            "address": self.address,
+            "has_attorney": self.has_attorney,
+            "attorney_name": self.attorney_name,
+            "attorney_phone": self.attorney_phone,
+            "law_firm": self.law_firm,
+            "injury_type": self.injury_type,
+            "injury_details": self.injury_details,
+            "funding_amount": self.funding_amount,
+        }
