@@ -1,10 +1,7 @@
 # kb_client.py
 import os, json
 import httpx
-
-KB_URL = os.environ.get("KB_URL", "")
-KB_API_KEY = os.environ.get("KB_API_KEY", "")
-KB_MAX_K = int(os.environ.get("KB_MAX_K", "20"))
+from .config import KB_URL, KB_API_KEY, KB_MAX_K
 
 async def kb_search(query: str, k: int = 5):
     if not KB_URL or not query:
@@ -15,13 +12,13 @@ async def kb_search(query: str, k: int = 5):
         k = 5
     headers = {"x-api-key": KB_API_KEY} if KB_API_KEY else {}
     try:
-        async with httpx.AsyncClient(timeout=3.0) as cli:
+        async with httpx.AsyncClient(timeout=3.5) as cli:
             r = await cli.post(KB_URL, json={"query": query, "k": k}, headers=headers)
             r.raise_for_status()
-            data = r.json()
-            return data.get("results", [])
+            return r.json().get("results", [])
     except Exception:
         return []
+
 
 def format_kb_context(hits, max_chars: int = 900) -> str:
     if not hits: return ""
