@@ -1,6 +1,6 @@
 PROMPTS = {
     "INTRO": (
-        "Hi, I’m Anna with Oasis, your intake assistant for pre-settlement funding. "
+        "Hi, I’m Anna with Acme Financial. Your intake assistant for pre-settlement funding. "
         "I’ll take your application, confirm details, and share next steps."
     ),
     "EXISTING": (
@@ -8,12 +8,10 @@ PROMPTS = {
         "Would you like to continue a pending application, modify a completed one, or start a new application?"
     ),
 
-    # Capture
+    # Capture prompts (LLM will parse from natural speech)
     "ASK_NAME": "To start, may I have your full legal name as it appears on your ID?",
-    "ASK_LAST_NAME": "Thanks {first}. And your legal last name?",
-    "ASK_PREFERRED_PHONE_CONFIRM": "I can use the number you’re calling from: {caller}. Is that your preferred contact number?",
-    "ASK_PHONE": "What’s the preferred phone number to reach you at? You can say it.",
-    "ASK_EMAIL": "Great. What’s the best email address for updates?",
+    "ASK_PHONE": "What’s the best phone number to reach you at?",
+    "ASK_EMAIL": "What’s the best email address for updates?",
     "ASK_ADDRESS": "What’s your residential address, including city, state, and ZIP? You can say skip if you prefer not to share.",
     "ASK_ATTORNEY_YN": "Do you currently have an attorney representing you? Please say yes or no.",
     "ASK_ATTORNEY_INFO": "Please share the attorney’s name, phone number, the law firm, and the firm’s address.",
@@ -23,18 +21,15 @@ PROMPTS = {
     "ASK_FUNDING_TYPE": "Are you looking for fresh funding, or to extend or top up existing funding?",
     "ASK_FUNDING_AMOUNT": "About how much funding are you looking for, in U.S. dollars?",
 
-    # Readback confirmations (existing)
-    "CONFIRM_PHONE": "I heard your preferred phone number as {phone}. Is that correct?",
-    "CONFIRM_EMAIL": "I have your email as {email}. Is that correct?",
+    # Confirmations / spelling
+    "CONFIRM_NAME": "I have your full legal name as {name}. I’ll spell it: {spelled}. Is that correct?",
+    "NAME_SPELL_PROMPT": "Please say your full legal name, spelling it slowly, letter by letter.",
+    "CONFIRM_PHONE": "I have your preferred phone number as {phone}. Is that correct?",
+    "CONFIRM_EMAIL_SPELL": "I have your email as {email}. Spelled as: {spelled}. Is that correct?",
+    "EMAIL_SPELL_PROMPT": "Please say your full email address, spelling it slowly.",
     "CONFIRM_ADDRESS": "I have your address as: {address}. Is that correct?",
     "CONFIRM_ATTORNEY": "I captured attorney information as: {summary}. Is that correct?",
     "CONFIRM_INJURY_DETAILS": "Here’s the incident summary I noted: {details}. Is that correct?",
-
-    # NEW: Spell & confirm (name/email)
-    "CONFIRM_NAME": "I have your full legal name as {name}. I’ll spell it: {spelled}. Is that correct?",
-    "NAME_SPELL_PROMPT": "Please say your full legal name, spelling it slowly, letter by letter.",
-    "EMAIL_SPELL_PROMPT": "Please say your full email address, spelling it slowly. For example: j o h n dot d o e at gmail dot com.",
-    "CONFIRM_EMAIL_SPELL": "I have your email as {email}. Spelled as: {spelled}. Is that correct?",
 
     # Address & state notes
     "ADDRESS_SKIPPED": "No problem, I’ll note that address was not provided.",
@@ -42,16 +37,15 @@ PROMPTS = {
     "STATE_ELIGIBLE": "Based on our info, Oasis serves clients in {state}.",
     "STATE_INELIGIBLE": "It looks like Oasis does not serve clients in {state}. A specialist can confirm.",
 
-    # Summary & flow
+    # Summary, correction & wrap-up
     "SUMMARY_INTRO": "Let me repeat what I captured.",
     "SUMMARY_CONFIRM": "Is this correct?",
-    "DONE": "Thanks for the confirmation. A case specialist will reach out shortly.",
     "HANDOFF": "Okay, I’ll connect you to a specialist and share the info I’ve captured.",
-    "REPROMPT_SHORT": "Sorry, I didn’t catch that. ",
+    "DONE": "Thanks for the confirmation. A case specialist will reach out shortly.",
     "CORRECT_SELECT": "Which information would you like to change? You can say: name, phone, email, address, attorney, case, incident date, funding type, or funding amount.",
     "CORRECT_ACK": "Got it. Let’s update that.",
 
-    # Q&A wrap-up
+    # Q&A
     "QNA_OFFER": "Before we wrap up, do you have any questions for me?",
     "QNA_PROMPT": "Sure—what would you like to know?",
     "QNA_FOLLOWUP": "Anything else I can clarify?",
