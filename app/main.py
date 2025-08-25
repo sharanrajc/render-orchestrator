@@ -67,7 +67,7 @@ def _field_missing(s: SessionState, f: str) -> bool:
         "full_name": not s.full_name,
         "phone": not (s.best_phone or s.phone),
         "email": not s.email,
-        "address": not s.address and not s.address_skipped,
+        "address": (not s.address) and (not getattr(s, "address_skipped", False)),
         "attorney": s.has_attorney is None or (s.has_attorney and not (s.attorney_name or s.attorney_phone or s.law_firm)),
         "case": not s.injury_type,
         "injury_details": not s.injury_details,
