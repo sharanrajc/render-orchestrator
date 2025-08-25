@@ -308,12 +308,12 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
             if amt: state.funding_amount = amt
 
         # Confirmations (one-shot). Only email + phone to keep friction low.
-        if state.email and not state._flags.get("email_confirmed"):
+        if state.email and not state.flags.get("email_confirmed"):
             state._confirm_retries = state._confirm_retries + 1 if hasattr(state, "_confirm_retries") else 0
             state.awaiting_confirm_field = "email"
             return respond(state, PROMPTS["CONFIRM_EMAIL_SPELL"].format(email=state.email, spelled=spell_for_email(state.email)))
 
-        if (state.best_phone or state.phone) and not state._flags.get("phone_confirmed"):
+        if (state.best_phone or state.phone) and not state.flags.get("phone_confirmed"):
             pn = state.best_phone or state.phone
             # format digits spaced so TTS reads them cleanly
             spaced = " ".join(list(pn))
@@ -325,7 +325,7 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
             f = state.awaiting_confirm_field
             yn = yes_no(utter)
             if yn is True:
-                state._flags[f"{f}_confirmed"] = True
+                state.flags[f"{f}_confirmed"] = True
                 state.awaiting_confirm_field = None
             elif yn is False:
                 state.awaiting_confirm_field = None
