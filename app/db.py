@@ -56,12 +56,12 @@ def upsert_application_from_state(db, state):
     row.best_phone = state.best_phone or state.phone
     row.email = state.email
     row.address = state.address
-    row.address_norm = state.address_norm
+    row.address_norm = getattr(state, "address_norm", None)
     row.address_verified = state.address_verified
-    row.address_skipped = state.address_skipped
+    row.address_skipped = bool(getattr(state, "address_skipped", False))
     row.state = state.state
-    row.state_eligible = state.state_eligible
-    row.state_eligibility_note = state.state_eligibility_note
+    row.state_eligible = getattr(state, "state_eligible", None)
+    row.state_eligibility_note = getattr(state, "state_eligibility_note", None)
 
     row.has_attorney = state.has_attorney
     row.attorney_name = state.attorney_name
