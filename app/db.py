@@ -58,6 +58,7 @@ def upsert_application_from_state(db, state):
     row.address = state.address
     row.address_norm = state.address_norm
     row.address_verified = state.address_verified
+    row.address_skipped = state.address_skipped
     row.state = state.state
     row.state_eligible = state.state_eligible
     row.state_eligibility_note = state.state_eligibility_note
