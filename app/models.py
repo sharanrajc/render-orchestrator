@@ -5,7 +5,7 @@ import time
 class OrchestrateRequest(BaseModel):
     session_id: str
     last_user_utterance: Optional[str] = ""
-    caller_number: Optional[str] = None   # Twilio → event.From
+    caller_number: Optional[str] = None
 
 class OrchestrateResponse(BaseModel):
     updates: dict
@@ -14,12 +14,11 @@ class OrchestrateResponse(BaseModel):
     handoff: bool = False
     citations: List[int] = []
     confidence: float = 0.7
-    # hint to telephony layer: how long to wait for speech
     listen_timeout_sec: int = 7
 
 class SessionState(BaseModel):
     session_id: str
-    stage: str = "ENTRY"                 # ENTRY → GREETING/RESUME → ...
+    stage: str = "ENTRY"
     completed: bool = False
 
     # Caller
@@ -48,11 +47,14 @@ class SessionState(BaseModel):
     # Case
     injury_type: Optional[str] = None
     injury_details: Optional[str] = None
-    incident_date: Optional[str] = None   # ISO yyyy-mm-dd
+    incident_date: Optional[str] = None
 
     # Funding
-    funding_type: Optional[str] = None    # fresh|topup
+    funding_type: Optional[str] = None
     funding_amount: Optional[str] = None
+
+    # LLM confidences (last seen)
+    confidences: Dict[str, float] = Field(default_factory=dict)
 
     # Flow control
     retries: Dict[str, int] = Field(default_factory=dict)
@@ -61,12 +63,14 @@ class SessionState(BaseModel):
     awaiting_confirmation: bool = False
     correction_mode: bool = False
     correction_target: Optional[str] = None
+    awaiting_confirm_field: Optional[str] = None
     updated_at: float = Field(default_factory=lambda: time.time())
 
-    # NEW: per-turn listening hint + Q&A controls
+    # Listen hints and Q&A
     listen_timeout_sec: int = 7
     qna_offered: bool = False
-    qna_remaining: int = 2  # allow up to 2 Q&A turns
+    qna_remaining: int = 2
+    extra: Dict[str, str] = Field(default_factory=dict)
 
     def to_updates(self) -> dict:
         return {
