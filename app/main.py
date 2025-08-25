@@ -176,6 +176,20 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
         TRANSCRIPTS.setdefault(req.session_id, [])
         _append_turn(req.session_id, "user", utter, stage)
 
+    # Treat startup token as empty utterance but force ENTRY greeting
+    if (req.last_user_utterance or "").strip() == "__start__":
+        utter = ""
+        if state.stage == "ENTRY":
+            greet = PROMPTS["INTRO"]
+            if state.caller_number:
+                with SessionLocal() as db:
+                    latest = get_latest_by_caller(db, state.caller_number)
+                if latest:
+                    state.stage = "RESUME_CHOICE"
+                    return respond(state, greet + " " + PROMPTS["EXISTING_V2"])
+            state.stage = "GREETING"
+            return respond(state, greet)
+
     # ENTRY → RESUME or GREETING
     if stage == "ENTRY":
         greet = PROMPTS["INTRO"]
