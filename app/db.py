@@ -1,103 +1,80 @@
-from datetime import datetime
-from typing import Optional
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, func
+from sqlalchemy.orm import sessionmaker, declarative_base
+from .config import DATABASE_URL
 
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text
-from sqlalchemy.orm import declarative_base, sessionmaker
-
-from .config import DATABASE_URL, DB_ECHO
-
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is required (e.g., postgresql+psycopg2://user:pass@host:5432/dbname)")
-
-engine = create_engine(DATABASE_URL, echo=DB_ECHO, future=True, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, future=True, expire_on_commit=False)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
 
 class Application(Base):
     __tablename__ = "applications"
-    id = Column(Integer, primary_key=True)
-    session_id = Column(String(64), index=True, nullable=False)
-    status = Column(String(16), default="pending", index=True)  # pending|completed
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String, index=True)
+    status = Column(String, default="pending")
+    caller_number = Column(String, index=True)
 
-    # Caller
-    caller_number = Column(String(32), index=True, nullable=True)
-
-    # Contact
-    full_name = Column(String(256))
-    phone = Column(String(32))
-    best_phone = Column(String(32))
-    email = Column(String(256))
-    address = Column(Text)
-    address_norm = Column(Text)
+    full_name = Column(String)
+    phone = Column(String)
+    best_phone = Column(String)
+    email = Column(String)
+    address = Column(String)
+    address_norm = Column(String)
     address_verified = Column(Boolean, default=False)
-    state = Column(String(2))
-    state_eligible = Column(String(32))  # yes|no|unknown
-    state_eligibility_note = Column(Text)
+    state = Column(String)
+    state_eligible = Column(String)
+    state_eligibility_note = Column(String)
 
-    # Attorney
     has_attorney = Column(Boolean)
-    attorney_name = Column(String(256))
-    attorney_phone = Column(String(32))
-    law_firm = Column(String(256))
-    law_firm_address = Column(Text)
+    attorney_name = Column(String)
+    attorney_phone = Column(String)
+    law_firm = Column(String)
+    law_firm_address = Column(String)
     attorney_verified = Column(Boolean, default=False)
 
-    # Case
-    injury_type = Column(String(64))
-    injury_details = Column(Text)
-    incident_date = Column(String(16))   # ISO yyyy-mm-dd
+    injury_type = Column(String)
+    injury_details = Column(String)
+    incident_date = Column(String)
 
-    # Funding
-    funding_type = Column(String(16))    # fresh|topup
-    funding_amount = Column(String(32))  # "$5000"
+    funding_type = Column(String)
+    funding_amount = Column(String)
+
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 def init_db():
     Base.metadata.create_all(bind=engine)
 
-def upsert_application_from_state(db, state) -> Application:
-    app = db.query(Application).filter_by(session_id=state.session_id).one_or_none()
-    if app is None:
-        app = Application(session_id=state.session_id)
-        db.add(app)
+def upsert_application_from_state(db, state):
+    row = db.query(Application).filter(Application.session_id == state.session_id).first()
+    if not row:
+        row = Application(session_id=state.session_id)
+        db.add(row)
+    row.status = "completed" if state.completed else "pending"
+    row.caller_number = state.caller_number
+    row.full_name = state.full_name
+    row.phone = state.phone
+    row.best_phone = state.best_phone or state.phone
+    row.email = state.email
+    row.address = state.address
+    row.address_norm = state.address_norm
+    row.address_verified = state.address_verified
+    row.state = state.state
+    row.state_eligible = state.state_eligible
+    row.state_eligibility_note = state.state_eligibility_note
 
-    app.caller_number = getattr(state, "caller_number", None)
+    row.has_attorney = state.has_attorney
+    row.attorney_name = state.attorney_name
+    row.attorney_phone = state.attorney_phone
+    row.law_firm = state.law_firm
+    row.law_firm_address = state.law_firm_address
+    row.attorney_verified = state.attorney_verified
 
-    app.full_name = state.full_name
-    app.phone = state.phone
-    app.best_phone = state.best_phone or state.phone
-    app.email = state.email
-    app.address = state.address
-    app.address_norm = getattr(state, "address_norm", None)
-    app.address_verified = bool(getattr(state, "address_verified", False))
-    app.state = getattr(state, "state", None)
-    app.state_eligible = getattr(state, "state_eligible", None)
-    app.state_eligibility_note = getattr(state, "state_eligibility_note", None)
+    row.injury_type = state.injury_type
+    row.injury_details = state.injury_details
+    row.incident_date = state.incident_date
 
-    app.has_attorney = state.has_attorney
-    app.attorney_name = state.attorney_name
-    app.attorney_phone = state.attorney_phone
-    app.law_firm = state.law_firm
-    app.law_firm_address = getattr(state, "law_firm_address", None)
-    app.attorney_verified = bool(getattr(state, "attorney_verified", False))
+    row.funding_type = state.funding_type
+    row.funding_amount = state.funding_amount
+    return row
 
-    app.injury_type = state.injury_type
-    app.injury_details = state.injury_details
-    app.incident_date = getattr(state, "incident_date", None)
-
-    app.funding_type = getattr(state, "funding_type", None)
-    app.funding_amount = state.funding_amount
-
-    app.status = "completed" if state.completed else "pending"
-    return app
-
-def get_latest_by_caller(db, caller_number: str) -> Optional[Application]:
-    if not caller_number:
-        return None
-    return (
-        db.query(Application)
-        .filter(Application.caller_number == caller_number)
-        .order_by(Application.updated_at.desc())
-        .first()
-    )
+def get_latest_by_caller(db, phone: str):
+    return db.query(Application).filter(Application.best_phone == phone).order_by(Application.updated_at.desc()).first()
