@@ -6,6 +6,9 @@ ORCH_API_KEY = os.getenv("ORCH_API_KEY", "")
 # Postgres
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./local.db")
 
+# Google APIs
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+
 # KB retrieval (optional; safe to leave unset)
 KB_URL = os.getenv("KB_URL", "")
 KB_API_KEY = os.getenv("KB_API_KEY", "")
