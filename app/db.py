@@ -20,6 +20,7 @@ class Application(Base):
     address = Column(String)
     address_norm = Column(String)
     address_verified = Column(Boolean, default=False)
+    address_skipped = Column(Boolean, nullable=True, default=False)
     state = Column(String)
     state_eligible = Column(String)
     state_eligibility_note = Column(String)
