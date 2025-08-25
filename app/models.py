@@ -22,6 +22,7 @@ class SessionState(BaseModel):
     address_skipped: bool = False
     state: Optional[str] = None
     state_eligible: Optional[str] = None  # "yes" | "no" | "unknown"
+    state_eligibility_note: str | None = None   # brief note like "Oasis serves in FL"
 
     # Attorney
     has_attorney: Optional[bool] = None
