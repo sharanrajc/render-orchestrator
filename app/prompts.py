@@ -4,7 +4,7 @@ PROMPTS = {
         "I’ll take your application, confirm details, and share next steps."
     ),
     "EXISTING": (
-        "I see an existing application for this number. "
+        "I see an existing application for this number. Would you like to continue a pending application, modify a completed one, or start a new application?"
         "Would you like to continue a pending application, modify a completed one, or start a new application?"
     ),
 
