@@ -1,5 +1,5 @@
 # app/main.py
-import time
+import time, re
 from typing import Optional, List, Dict
 
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -14,7 +14,7 @@ from .llm_slots import extract_slots
 from .tools import verify_address, verify_attorney
 from .kb_client import kb_search
 
-app = FastAPI(title="Orchestrator (LLM slots)", version="4.0.1")
+app = FastAPI(title="Orchestrator (LLM slots, anti-loop)", version="4.0.2")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
@@ -23,10 +23,9 @@ init_db()
 
 SESSIONS: Dict[str, SessionState] = {}
 TRANSCRIPTS: Dict[str, List[dict]] = {}
-MAX_RETRIES_PER_STAGE = 2
+MAX_RETRIES_PER_STAGE = 3
 TRANSCRIPT_MAX_TURNS = 300
 
-# Order used to decide which field to ask next
 FIELD_ORDER = [
     "full_name", "phone", "email", "address", "attorney", "case",
     "injury_details", "incident_date", "funding_type", "funding_amount"
@@ -47,12 +46,6 @@ def _append_turn(session_id: str, role: str, text: str, stage: str, extra: Optio
         TRANSCRIPTS[session_id] = lst[-TRANSCRIPT_MAX_TURNS:]
 
 
-def bump_retry(state: SessionState, key: str) -> bool:
-    n = state.retries.get(key, 0) + 1
-    state.retries[key] = n
-    return n > MAX_RETRIES_PER_STAGE
-
-
 def respond(
     state: SessionState,
     text: str,
@@ -64,7 +57,6 @@ def respond(
 ):
     """Build the OrchestrateResponse, persist state to DB, and append transcript."""
     citations = citations or []
-    # Record AI turn
     _append_turn(
         state.session_id,
         "ai",
@@ -72,13 +64,11 @@ def respond(
         state.stage,
         {"completed": completed, "handoff": handoff, "citations": citations},
     )
-    # Persist state
     SESSIONS[state.session_id] = state
     state.last_prompt = (text or "")
     with SessionLocal() as db:
         upsert_application_from_state(db, state)
         db.commit()
-
     return OrchestrateResponse(
         updates=state.to_updates(),
         next_prompt=(text or "")[:180],
@@ -167,6 +157,59 @@ def _summarize(state: SessionState) -> str:
     return PROMPTS["SUMMARY_INTRO"] + " " + ". ".join(parts) + ". " + PROMPTS["SUMMARY_CONFIRM"]
 
 
+# ---------- anti-loop helpers ----------
+
+_NAME_PREFIXES = [
+    r"\bmy (full legal )?name is\b",
+    r"\bthis is\b",
+    r"\bi am\b",
+    r"\bit is\b",
+    r"\bthe name is\b",
+    r"\byou can call me\b",
+]
+
+def _fallback_name_extract(text: str) -> Optional[str]:
+    """Deterministic backup: pull 'Joe Smith' from 'My full legal name is Joe Smith' etc."""
+    if not text:
+        return None
+    t = " " + text.strip() + " "
+    for pref in _NAME_PREFIXES:
+        m = re.search(pref + r"\s+([A-Za-z][A-Za-z .'\-]{0,80})", t, flags=re.IGNORECASE)
+        if m:
+            cand = m.group(1).strip().strip(" .,!?:;\"'()[]")
+            toks = [w for w in cand.split() if re.search(r"[A-Za-z]", w)]
+            if 1 <= len(toks) <= 4:
+                def _tc(w): return w if re.fullmatch(r"[A-Za-z]\.", w) else w.capitalize()
+                return " ".join(_tc(w) for w in toks)
+    # if whole utterance looks like a name
+    cand = text.strip().strip(" .,!?:;\"'()[]")
+    toks = [w for w in cand.split() if re.search(r"[A-Za-z]", w)]
+    if 1 <= len(toks) <= 4 and not any(ch.isdigit() for ch in cand) and "@" not in cand:
+        def _tc(w): return w if re.fullmatch(r"[A-Za-z]\.", w) else w.capitalize()
+        return " ".join(_tc(w) for w in toks)
+    return None
+
+def _name_prompt_for_try(tries: int) -> str:
+    if tries <= 0:
+        return PROMPTS["ASK_NAME"] + " You can simply say, “Joe Smith.”"
+    if tries == 1:
+        return "Please say just your first and last name, like “Joe Smith.”"
+    if tries == 2:
+        return "Please spell your full legal name, letter by letter."
+    # tries >= 3
+    return "I’m still not getting that. Would you like me to connect you to a specialist, or would you like to try your name once more?"
+
+
+def _resume_prompt_for_try(tries: int) -> str:
+    base = "I see an application linked to this number. Please say “continue”, “modify”, or “start new application.”"
+    if tries == 0:
+        return base
+    if tries == 1:
+        return "Say “continue” to pick up where you left off, “modify” to change an application, or “start new application.”"
+    if tries >= 2:
+        return "Would you like to continue the pending application, modify a completed one, or start a new application? Please say one of: “continue”, “modify”, or “start new.”"
+
+
 # ------------------- Public endpoints -------------------
 
 @app.get("/health")
@@ -253,8 +296,7 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
 
     if req.caller_number and not state.caller_number:
         state.caller_number = req.caller_number
-        # Tentatively set best_phone to caller ID (will be confirmed later)
-        state.best_phone = req.caller_number
+        state.best_phone = req.caller_number  # tentative; will confirm later
 
     utter = clean_text(req.last_user_utterance or "")
     stage = state.stage
@@ -269,91 +311,83 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
                 latest = get_latest_by_caller(db, state.caller_number)
             if latest:
                 state.stage = "RESUME_CHOICE"
-                return respond(state, greet + " " + PROMPTS["EXISTING"])
+                state.listen_timeout_sec = DEFAULT_LISTEN
+                tries = state.retries.get("RESUME_CHOICE", 0)
+                return respond(state, greet + " " + _resume_prompt_for_try(tries))
         state.stage = "GREETING"
         return respond(state, greet)
 
     if stage == "GREETING":
         state.stage = "FLOW"
-        state.listen_timeout_sec = LONG_LISTEN  # give extra time for "My full legal name is ..."
-        return respond(state, PROMPTS["ASK_NAME"])
+        state.listen_timeout_sec = LONG_LISTEN  # allow natural “my full legal name is …”
+        # first time ask (tries=0)
+        state.retries["ASK_NAME"] = 0
+        return respond(state, _name_prompt_for_try(0))
 
     if stage == "RESUME_CHOICE":
         t = (utter or "").lower()
-        if "continue" in t or "pending" in t:
+        if any(w in t for w in ["continue", "resume", "pending"]):
             state.stage = "FLOW"
             nxt = _next_missing(state) or "summary"
+            # move on
             return respond(
                 state,
-                "Let’s pick up where we left off. "
-                + (PROMPTS["ASK_NAME"] if nxt == "full_name" else PROMPTS["ASK_PHONE"])
+                "Got it—continuing your application. " + (PROMPTS["ASK_NAME"] if nxt == "full_name" else PROMPTS["ASK_PHONE"])
             )
-        if "modify" in t or "update" in t or "edit" in t:
+        if any(w in t for w in ["modify", "update", "edit", "change"]):
             state.stage = "SUMMARY"
             state.summary_read = False
             state.awaiting_confirmation = False
             return respond(state, "Okay, I’ll read back your details and we can make changes.")
-        if "new" in t or "start" in t:
+        if any(w in t for w in ["new", "start"]):
             state = SessionState(session_id=state.session_id, caller_number=state.caller_number)
             SESSIONS[state.session_id] = state
             state.stage = "FLOW"
-            return respond(state, "Starting a new application. " + PROMPTS["ASK_NAME"])
-        if bump_retry(state, "RESUME_CHOICE"):
+            state.listen_timeout_sec = LONG_LISTEN
+            state.retries["ASK_NAME"] = 0
+            return respond(state, "Starting a new application. " + _name_prompt_for_try(0))
+
+        # no/ambiguous input → escalate, then default to continue
+        tries = state.retries.get("RESUME_CHOICE", 0)
+        if tries >= MAX_RETRIES_PER_STAGE:
             state.stage = "FLOW"
-            return respond(state, PROMPTS["ASK_NAME"])
-        return respond(state, PROMPTS["EXISTING"])
+            return respond(state, "I’ll continue your pending application. If that’s not right, just say “stop” anytime.")
+        state.retries["RESUME_CHOICE"] = tries + 1
+        state.listen_timeout_sec = DEFAULT_LISTEN
+        return respond(state, _resume_prompt_for_try(tries))
 
     # ------------------- FLOW -------------------
     if stage == "FLOW":
-        # --- FIXED: handle pending confirmations without clearing on silence ---
+        # Handle pending confirmations without clearing on silence
         if state.awaiting_confirm_field:
             f = state.awaiting_confirm_field
             if not utter:
-                # Re-prompt the same confirmation and keep waiting
+                # repeat same confirmation; keep waiting
                 if f == "full_name" and state.full_name:
-                    return respond(
-                        state,
-                        PROMPTS["CONFIRM_NAME"].format(
-                            name=state.full_name, spelled=spell_for_name(state.full_name)
-                        ),
-                    )
+                    return respond(state, PROMPTS["CONFIRM_NAME"].format(
+                        name=state.full_name, spelled=spell_for_name(state.full_name)))
                 if f == "phone" and (state.best_phone or state.phone):
-                    return respond(
-                        state, PROMPTS["CONFIRM_PHONE"].format(phone=state.best_phone or state.phone)
-                    )
+                    return respond(state, PROMPTS["CONFIRM_PHONE"].format(phone=state.best_phone or state.phone))
                 if f == "email" and state.email:
-                    return respond(
-                        state,
-                        PROMPTS["CONFIRM_EMAIL_SPELL"].format(
-                            email=state.email, spelled=spell_for_email(state.email)
-                        ),
-                    )
+                    return respond(state, PROMPTS["CONFIRM_EMAIL_SPELL"].format(
+                        email=state.email, spelled=spell_for_email(state.email)))
                 if f == "address" and (state.address_norm or state.address):
-                    return respond(
-                        state,
-                        PROMPTS["CONFIRM_ADDRESS"].format(address=state.address_norm or state.address),
-                    )
+                    return respond(state, PROMPTS["CONFIRM_ADDRESS"].format(
+                        address=state.address_norm or state.address))
                 if f == "attorney":
-                    return respond(
-                        state, PROMPTS["CONFIRM_ATTORNEY"].format(summary=_attorney_summary(state))
-                    )
+                    return respond(state, PROMPTS["CONFIRM_ATTORNEY"].format(summary=_attorney_summary(state)))
                 if f == "injury_details" and state.injury_details:
-                    return respond(
-                        state,
-                        PROMPTS["CONFIRM_INJURY_DETAILS"].format(details=state.injury_details),
-                    )
+                    return respond(state, PROMPTS["CONFIRM_INJURY_DETAILS"].format(details=state.injury_details))
                 return respond(state, "Please say yes or no.")
-            # We have speech: interpret it
             yn = yes_no(utter)
             if yn is True:
-                # confirmed; clear and continue
                 state.awaiting_confirm_field = None
             elif yn is False:
-                # explicit correction path
                 field = state.awaiting_confirm_field
                 state.awaiting_confirm_field = None
                 if field == "full_name":
-                    return respond(state, PROMPTS["NAME_SPELL_PROMPT"])
+                    state.listen_timeout_sec = LONG_LISTEN
+                    return respond(state, "Okay—let’s try again. " + _name_prompt_for_try(1))
                 if field == "email":
                     return respond(state, PROMPTS["EMAIL_SPELL_PROMPT"])
                 if field == "phone":
@@ -369,42 +403,25 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
                     return respond(state, PROMPTS["ASK_INJURY_DETAILS"])
                 return respond(state, "Okay, let’s update that.")
             else:
-                # ambiguous — re-ask the same confirm, keep waiting
+                # ambiguous — re-ask same confirm
                 if f == "full_name" and state.full_name:
-                    return respond(
-                        state,
-                        PROMPTS["CONFIRM_NAME"].format(
-                            name=state.full_name, spelled=spell_for_name(state.full_name)
-                        ),
-                    )
+                    return respond(state, PROMPTS["CONFIRM_NAME"].format(
+                        name=state.full_name, spelled=spell_for_name(state.full_name)))
                 if f == "email" and state.email:
-                    return respond(
-                        state,
-                        PROMPTS["CONFIRM_EMAIL_SPELL"].format(
-                            email=state.email, spelled=spell_for_email(state.email)
-                        ),
-                    )
+                    return respond(state, PROMPTS["CONFIRM_EMAIL_SPELL"].format(
+                        email=state.email, spelled=spell_for_email(state.email)))
                 if f == "phone" and (state.best_phone or state.phone):
-                    return respond(
-                        state, PROMPTS["CONFIRM_PHONE"].format(phone=state.best_phone or state.phone)
-                    )
+                    return respond(state, PROMPTS["CONFIRM_PHONE"].format(phone=state.best_phone or state.phone))
                 if f == "address" and (state.address_norm or state.address):
-                    return respond(
-                        state,
-                        PROMPTS["CONFIRM_ADDRESS"].format(address=state.address_norm or state.address),
-                    )
+                    return respond(state, PROMPTS["CONFIRM_ADDRESS"].format(
+                        address=state.address_norm or state.address))
                 if f == "attorney":
-                    return respond(
-                        state, PROMPTS["CONFIRM_ATTORNEY"].format(summary=_attorney_summary(state))
-                    )
+                    return respond(state, PROMPTS["CONFIRM_ATTORNEY"].format(summary=_attorney_summary(state)))
                 if f == "injury_details" and state.injury_details:
-                    return respond(
-                        state,
-                        PROMPTS["CONFIRM_INJURY_DETAILS"].format(details=state.injury_details),
-                    )
+                    return respond(state, PROMPTS["CONFIRM_INJURY_DETAILS"].format(details=state.injury_details))
                 return respond(state, "Please say yes or no.")
 
-        # Run LLM slot extraction for the latest utterance (bias toward next-missing field)
+        # Run LLM slot extraction for latest utterance (bias to next missing)
         wanted = []
         nxt = _next_missing(state)
         if nxt == "attorney":
@@ -415,7 +432,7 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
             wanted = [nxt]
         slots = extract_slots(utter, wanted_fields=wanted) if utter else {}
 
-        # Apply high-confidence slots (tracked in state.confidences by llm_slots)
+        # Apply slots (extract_slots already applies a confidence threshold)
         conf = slots.get("_confidence", {})
         def set_if(k: str, cur: Optional[str], newv: Optional[str]) -> Optional[str]:
             if not newv:
@@ -426,47 +443,36 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
                 return nv
             return cur
 
-        if "full_name" in slots:
-            state.full_name = set_if("full_name", state.full_name, slots["full_name"])
+        if "full_name" in slots: state.full_name = set_if("full_name", state.full_name, slots["full_name"])
         if "phone" in slots:
             state.phone = set_if("phone", state.phone, slots["phone"])
             state.best_phone = state.best_phone or state.phone
-        if "email" in slots:
-            state.email = set_if("email", state.email, slots["email"])
-        if "address" in slots:
-            state.address = set_if("address", state.address, slots["address"])
-        if "state" in slots:
-            state.state = set_if("state", state.state, slots["state"])
-        if "has_attorney" in slots:
-            state.has_attorney = slots["has_attorney"]
-        if "attorney_name" in slots:
-            state.attorney_name = set_if("attorney_name", state.attorney_name, slots["attorney_name"])
-        if "attorney_phone" in slots:
-            state.attorney_phone = set_if("attorney_phone", state.attorney_phone, slots["attorney_phone"])
-        if "law_firm" in slots:
-            state.law_firm = set_if("law_firm", state.law_firm, slots["law_firm"])
-        if "law_firm_address" in slots:
-            state.law_firm_address = set_if("law_firm_address", state.law_firm_address, slots["law_firm_address"])
-        if "injury_type" in slots:
-            state.injury_type = set_if("injury_type", state.injury_type, slots["injury_type"])
-        if "injury_details" in slots:
-            state.injury_details = set_if("injury_details", state.injury_details, slots["injury_details"])
-        if "incident_date" in slots:
-            state.incident_date = set_if("incident_date", state.incident_date, slots["incident_date"])
-        if "funding_type" in slots:
-            state.funding_type = set_if("funding_type", state.funding_type, slots["funding_type"])
-        if "funding_amount" in slots:
-            state.funding_amount = set_if("funding_amount", state.funding_amount, slots["funding_amount"])
+        if "email" in slots: state.email = set_if("email", state.email, slots["email"])
+        if "address" in slots: state.address = set_if("address", state.address, slots["address"])
+        if "state" in slots: state.state = set_if("state", state.state, slots["state"])
+        if "has_attorney" in slots: state.has_attorney = slots["has_attorney"]
+        if "attorney_name" in slots: state.attorney_name = set_if("attorney_name", state.attorney_name, slots["attorney_name"])
+        if "attorney_phone" in slots: state.attorney_phone = set_if("attorney_phone", state.attorney_phone, slots["attorney_phone"])
+        if "law_firm" in slots: state.law_firm = set_if("law_firm", state.law_firm, slots["law_firm"])
+        if "law_firm_address" in slots: state.law_firm_address = set_if("law_firm_address", state.law_firm_address, slots["law_firm_address"])
+        if "injury_type" in slots: state.injury_type = set_if("injury_type", state.injury_type, slots["injury_type"])
+        if "injury_details" in slots: state.injury_details = set_if("injury_details", state.injury_details, slots["injury_details"])
+        if "incident_date" in slots: state.incident_date = set_if("incident_date", state.incident_date, slots["incident_date"])
+        if "funding_type" in slots: state.funding_type = set_if("funding_type", state.funding_type, slots["funding_type"])
+        if "funding_amount" in slots: state.funding_amount = set_if("funding_amount", state.funding_amount, slots["funding_amount"])
 
-        # Critical confirmations (low friction):
-        if state.full_name and (state.awaiting_confirm_field is None) and state.confidences.get("full_name", 0) >= 0.65:
+        # --- SPECIAL: name fallback if still missing but user said something like "my name is ..."
+        if nxt == "full_name" and not state.full_name and utter:
+            fb = _fallback_name_extract(utter)
+            if fb:
+                state.full_name = fb
+
+        # Critical confirmations (low friction)
+        if state.full_name and (state.awaiting_confirm_field is None) and state.confidences.get("full_name", 0) >= 0.50:
             state.awaiting_confirm_field = "full_name"
-            return respond(
-                state,
-                PROMPTS["CONFIRM_NAME"].format(
-                    name=state.full_name, spelled=spell_for_name(state.full_name)
-                ),
-            )
+            return respond(state, PROMPTS["CONFIRM_NAME"].format(
+                name=state.full_name, spelled=spell_for_name(state.full_name)
+            ))
 
         if state.phone and (state.awaiting_confirm_field is None) and state.confidences.get("phone", 0) >= 0.65 and not state.best_phone:
             state.best_phone = state.phone
@@ -476,19 +482,14 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
 
         if state.email and (state.awaiting_confirm_field is None) and state.confidences.get("email", 0) >= 0.65:
             state.awaiting_confirm_field = "email"
-            return respond(
-                state,
-                PROMPTS["CONFIRM_EMAIL_SPELL"].format(
-                    email=state.email, spelled=spell_for_email(state.email)
-                ),
-            )
+            return respond(state, PROMPTS["CONFIRM_EMAIL_SPELL"].format(
+                email=state.email, spelled=spell_for_email(state.email)
+            ))
 
         if state.address and (state.awaiting_confirm_field is None) and state.confidences.get("address", 0) >= 0.65:
-            # Optional Google verification (non-blocking)
             verified, normalized = await verify_address(state.address)
             state.address_verified = bool(verified)
             state.address_norm = normalized or state.address
-            # Best-effort state eligibility via KB
             if state.state:
                 try:
                     hits = await kb_search(f"Does Oasis serve clients in {state.state}?", k=3)
@@ -503,9 +504,7 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
                     state.state_eligible = state.state_eligible or "unknown"
             state.awaiting_confirm_field = "address"
             state.listen_timeout_sec = LONG_LISTEN
-            return respond(
-                state, PROMPTS["CONFIRM_ADDRESS"].format(address=state.address_norm or state.address)
-            )
+            return respond(state, PROMPTS["CONFIRM_ADDRESS"].format(address=state.address_norm or state.address))
 
         if state.has_attorney and (state.awaiting_confirm_field is None) and (
             state.attorney_name or state.attorney_phone or state.law_firm or state.law_firm_address
@@ -521,7 +520,7 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
             state.listen_timeout_sec = LONG_LISTEN
             return respond(state, PROMPTS["CONFIRM_INJURY_DETAILS"].format(details=state.injury_details))
 
-        # Nothing to confirm → ask the next missing field
+        # Ask the next missing field with progressive guidance
         nxt = _next_missing(state)
         if not nxt:
             state.stage = "SUMMARY"
@@ -529,8 +528,17 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
             state.awaiting_confirmation = True
             return respond(state, "Looks like we have everything. I’ll read back your details.")
 
+        if nxt == "full_name":
+            tries = state.retries.get("ASK_NAME", 0)
+            state.retries["ASK_NAME"] = tries + 1
+            state.listen_timeout_sec = LONG_LISTEN
+            prompt = _name_prompt_for_try(tries)
+            if tries >= MAX_RETRIES_PER_STAGE:
+                # after multiple misses, offer human
+                return respond(state, prompt + " If you’d prefer a human, say “agent”.")
+            return respond(state, prompt)
+
         ask = {
-            "full_name": PROMPTS["ASK_NAME"],
             "phone": PROMPTS["ASK_PHONE"],
             "email": PROMPTS["ASK_EMAIL"],
             "address": PROMPTS["ASK_ADDRESS"],
@@ -549,7 +557,7 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
 
     if stage == "SUMMARY":
         t = (utter or "").lower()
-        if any(w in t for w in ["human", "agent", "representative", "someone", "live person"]):
+        if any(w in t for w in ["human", "agent", "representative", "someone", "live person", "specialist"]):
             return respond(state, PROMPTS["HANDOFF"], handoff=True)
 
         if not state.summary_read:
@@ -570,10 +578,13 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
                 state.awaiting_confirmation = False
                 state.stage = "CORRECT_SELECT"
                 return respond(state, PROMPTS["CORRECT_SELECT"])
-            if bump_retry(state, "SUMMARY_CONFIRM"):
+            # re-ask once or twice, then proceed
+            tries = state.retries.get("SUMMARY_CONFIRM", 0)
+            if tries >= 2:
                 state.completed = True
                 state.stage = "QNA_OFFER"
                 return respond(state, PROMPTS["QNA_OFFER"])
+            state.retries["SUMMARY_CONFIRM"] = tries + 1
             return respond(state, PROMPTS["SUMMARY_CONFIRM"])
 
     if stage == "CORRECT_SELECT":
@@ -596,16 +607,17 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
                 chosen = v
                 break
         if not chosen:
-            if bump_retry(state, "CORRECT_SELECT"):
-                return respond(
-                    state,
-                    "You can say: name, phone, email, address, attorney, case, incident date, funding type, or funding amount.",
-                )
+            tries = state.retries.get("CORRECT_SELECT", 0)
+            if tries >= 2:
+                # fallback: move to Q&A/Done
+                state.stage = "QNA_OFFER"
+                return respond(state, PROMPTS["QNA_OFFER"])
+            state.retries["CORRECT_SELECT"] = tries + 1
             return respond(state, PROMPTS["CORRECT_SELECT"])
 
         state.stage = "FLOW"
         prompts = {
-            "full_name": PROMPTS["ASK_NAME"],
+            "full_name": _name_prompt_for_try(1),
             "phone": PROMPTS["ASK_PHONE"],
             "email": PROMPTS["ASK_EMAIL"],
             "address": PROMPTS["ASK_ADDRESS"],
@@ -615,6 +627,7 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
             "funding_type": PROMPTS["ASK_FUNDING_TYPE"],
             "funding_amount": PROMPTS["ASK_FUNDING_AMOUNT"],
         }
+        if chosen in ("address", "attorney"): state.listen_timeout_sec = LONG_LISTEN
         return respond(state, PROMPTS["CORRECT_ACK"] + " " + prompts.get(chosen, PROMPTS["ASK_NAME"]))
 
     if stage == "QNA_OFFER":
@@ -648,11 +661,10 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
             state.stage = "DONE"
             state.completed = True
             return respond(state, answer + " " + PROMPTS["QNA_WRAP"] + " " + PROMPTS["DONE"], completed=True)
-        if bump_retry(state, "QNA_ASK"):
-            state.stage = "DONE"
-            state.completed = True
-            return respond(state, PROMPTS["QNA_WRAP"] + " " + PROMPTS["DONE"], completed=True)
-        return respond(state, PROMPTS["QNA_PROMPT"])
+        # no question — wrap it up
+        state.stage = "DONE"
+        state.completed = True
+        return respond(state, PROMPTS["QNA_WRAP"] + " " + PROMPTS["DONE"], completed=True)
 
     if stage == "DONE":
         state.completed = True
