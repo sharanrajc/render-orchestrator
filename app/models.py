@@ -14,10 +14,12 @@ class OrchestrateResponse(BaseModel):
     handoff: bool = False
     citations: List[int] = []
     confidence: float = 0.7
+    # hint to telephony layer: how long to wait for speech
+    listen_timeout_sec: int = 7
 
 class SessionState(BaseModel):
     session_id: str
-    stage: str = "ENTRY"                 # ENTRY → GREETING/RESUME
+    stage: str = "ENTRY"                 # ENTRY → GREETING/RESUME → ...
     completed: bool = False
 
     # Caller
@@ -60,6 +62,11 @@ class SessionState(BaseModel):
     correction_mode: bool = False
     correction_target: Optional[str] = None
     updated_at: float = Field(default_factory=lambda: time.time())
+
+    # NEW: per-turn listening hint + Q&A controls
+    listen_timeout_sec: int = 7
+    qna_offered: bool = False
+    qna_remaining: int = 2  # allow up to 2 Q&A turns
 
     def to_updates(self) -> dict:
         return {
