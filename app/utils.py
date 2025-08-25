@@ -1,6 +1,14 @@
 import re
 from dateutil import parser as dtparse
 
+def clean_text(s: str | None) -> str:
+    if not s:
+        return ""
+    s = s.strip()
+    s = re.sub(r"[ \t]+", " ", s)
+    s = s.strip(" .,!?:;\"'()[]")
+    return s
+
 def normalize_phone(s: str) -> str:
     digits = re.sub(r"\D", "", s or "")
     if len(digits) == 11 and digits.startswith("1"):
@@ -19,7 +27,7 @@ def extract_amount_usd(text: str):
 def yes_no(text: str):
     t = (text or "").lower()
     if any(w in t for w in ["yes","yeah","yep","correct","right","affirm","sure"]): return True
-    if any(w in t for w in ["no","nope","nah","negative","don’t","do not"]): return False
+    if any(w in t for w in ["no","nope","nah","negative","don’t","do not","incorrect"]): return False
     return None
 
 def first_name(full: str | None) -> str:
@@ -69,3 +77,44 @@ def next_missing_stage(state) -> str | None:
     if not state.funding_type: return "FUNDING_TYPE"
     if not state.funding_amount: return "FUNDING_AMOUNT"
     return None
+
+# --- Spoken → email normalization ---
+def normalize_email(text: str) -> str | None:
+    if not text:
+        return None
+    t = " " + text.lower().strip() + " "
+    t = re.sub(r"\s+at\s+", "@", t)
+    t = re.sub(r"\s+(dot|period|point)\s+", ".", t)
+    t = re.sub(r"\s+underscore\s+", "_", t)
+    t = re.sub(r"\s+dash\s+", "-", t)
+    t = re.sub(r"\s+plus\s+", "+", t)
+    t = re.sub(r"\s+", "", t)
+    t = t.strip(" .,!?:;\"'()[]")
+    if re.match(r"^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$", t):
+        return t
+    return None
+
+# --- Spell-out helpers (for TTS readback) ---
+def spell_for_name(name: str) -> str:
+    """Return something like: J O H N   D O E (3 spaces between words)."""
+    name = clean_text(name)
+    words = [w for w in name.split() if w]
+    spelled_words = [" ".join(list(w.upper())) for w in words]
+    return "   ".join(spelled_words)
+
+def spell_for_email(email: str) -> str:
+    """Return: j o h n dot d o e at g m a i l dot com"""
+    m = {
+        "@": "at",
+        ".": "dot",
+        "-": "dash",
+        "_": "underscore",
+        "+": "plus",
+    }
+    out = []
+    for ch in email.strip():
+        out.append(m.get(ch, ch))
+    # now space-separate characters and collapse spaces
+    spoken = " ".join(out)
+    spoken = re.sub(r"\s+", " ", spoken)
+    return spoken.lower()
