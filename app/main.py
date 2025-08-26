@@ -154,17 +154,17 @@ async def orchestrate(req: OrchestrateRequest, x_api_key: Optional[str] = Header
         _append_turn(req.session_id, "user", utter, state.stage)
 
     # startup token → force intro & resume check
-if utter == "__start__":
-    if state.stage == "ENTRY":
-        greet = PROMPTS["INTRO"]
-        if state.caller_number:
-            with SessionLocal() as db:
-                latest = get_latest_by_caller(db, state.caller_number)   # ✅ fixed
-            if latest:
-                state.stage = "RESUME_CHOICE"
-                return respond(state, greet + " " + PROMPTS["EXISTING"])
-        state.stage = "GREETING"
-        return respond(state, greet)
+    if utter == "__start__":
+        if state.stage == "ENTRY":
+            greet = PROMPTS["INTRO"]
+            if state.caller_number:
+                with SessionLocal() as db:
+                    latest = get_latest_by_caller(db, state.caller_number)   # ✅ fixed
+                if latest:
+                    state.stage = "RESUME_CHOICE"
+                    return respond(state, greet + " " + PROMPTS["EXISTING"])
+            state.stage = "GREETING"
+            return respond(state, greet)
 
     # human handoff shortcut
     if any(w in utter.lower() for w in ["agent","human","representative","speak to a person","operator"]) and state.stage not in ("DONE",):
