@@ -3,12 +3,12 @@ from typing import Optional, Dict, List
 from pydantic import BaseModel, Field
 
 class SessionState(BaseModel):
-    # Lifecycle / routing
+    # Routing
     session_id: str
     stage: str = "ENTRY"
     last_prompt: Optional[str] = None
 
-    # Caller & core identity
+    # Caller & identity
     caller_number: Optional[str] = None
     full_name: Optional[str] = None
     phone: Optional[str] = None
@@ -21,8 +21,8 @@ class SessionState(BaseModel):
     address_verified: bool = False
     address_skipped: bool = False
     state: Optional[str] = None
-    state_eligible: Optional[str] = None  # "yes" | "no" | "unknown"
-    state_eligibility_note: str | None = None   # brief note like "Oasis serves in FL"
+    state_eligible: Optional[str] = None     # "yes" | "no" | "unknown"
+    state_eligibility_note: Optional[str] = None
 
     # Attorney
     has_attorney: Optional[bool] = None
@@ -38,13 +38,13 @@ class SessionState(BaseModel):
     incident_date: Optional[str] = None
 
     # Funding
-    funding_type: Optional[str] = None    # "fresh" | "extend"
-    funding_amount: Optional[str] = None  # normalized like "$2,000"
+    funding_type: Optional[str] = None        # "fresh" | "extend"
+    funding_amount: Optional[str] = None      # "$2,000" etc.
 
-    # Orchestration metadata
+    # Orchestration
     retries: Dict[str, int] = Field(default_factory=dict)
     confidences: Dict[str, float] = Field(default_factory=dict)
-    flags: Dict[str, bool] = Field(default_factory=dict)  # <— renamed from _flags
+    flags: Dict[str, bool] = Field(default_factory=dict)
 
     awaiting_confirm_field: Optional[str] = None
     summary_read: bool = False
@@ -54,11 +54,10 @@ class SessionState(BaseModel):
     qna_remaining: int = 1
     completed: bool = False
 
-    # Telephony controls
+    # Telephony
     listen_timeout_sec: int = 7
 
     def to_updates(self) -> Dict[str, str]:
-        """What the Twilio client/UI might want to keep in sync."""
         return {
             "stage": self.stage,
             "full_name": self.full_name or "",
@@ -73,12 +72,10 @@ class SessionState(BaseModel):
             "funding_amount": self.funding_amount or "",
         }
 
-
 class OrchestrateRequest(BaseModel):
     session_id: str
     caller_number: Optional[str] = None
     last_user_utterance: Optional[str] = None
-
 
 class OrchestrateResponse(BaseModel):
     updates: Dict[str, str] = Field(default_factory=dict)
