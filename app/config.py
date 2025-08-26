@@ -16,7 +16,7 @@ KB_URL = os.environ.get("KB_URL", "")
 KB_API_KEY = os.environ.get("KB_API_KEY", "")
 
 # Google verification (optional)
-GOOGLE_MAPS_KEY = os.environ.get("GOOGLE_MAPS_KEY", "")
+GOOGLE_MAPS_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
 # Logger
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
